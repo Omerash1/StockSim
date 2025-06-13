@@ -1,0 +1,96 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database (for future use)
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: stocksim
+      POSTGRES_USER: stocksim_user
+      POSTGRES_PASSWORD: stocksim_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U stocksim_user -d stocksim"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Redis for caching ML predictions (optional)
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  # FastAPI Backend with ML
+  backend:
+    build: 
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      - SECRET_KEY=demo_secret_key_123
+      - DATABASE_URL=postgresql://stocksim_user:stocksim_password@postgres:5432/stocksim
+      - REDIS_URL=redis://redis:6379
+      - PYTHONPATH=/app
+      # Optimize for ML workloads
+      - PYTHONUNBUFFERED=1
+      - OMP_NUM_THREADS=2
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      # Mount for development (comment out for production)
+      - ./backend:/app
+      # Cache directory for yfinance data
+      - ml_cache:/app/.cache
+    restart: unless-stopped
+    # Resource limits for ML workloads
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '0.5'
+        reservations:
+          memory: 512M
+          cpus: '0.25'
+
+  # React Frontend
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    environment:
+      - REACT_APP_API_URL=http://localhost:8000
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  ml_cache:
+    driver: local
+
+networks:
+  default:
+    driver: bridge
